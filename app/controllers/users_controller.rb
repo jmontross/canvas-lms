@@ -23,6 +23,166 @@
 # a shortcut for the id of the user accessing the API. For instance,
 # `users/:user_id/page_views` can be accessed as `users/self/page_views` to
 # access the current user's page views.
+require 'cgi'
+require 'time'
+require 'hmac'
+require 'hmac-sha2'
+require 'base64'
+
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+class AWSCred
+  attr_reader :secret_key, :access_key
+  def initialize
+    credentials = YAML::load File.read "#{ENV["HOME"]}/.aws"
+    #inside $HOME/.aws
+    #ACCESSKEY: "YOURACCESSKEY"
+    #SECRETKEY: "YOURSECRETKEY"
+    @access_key = credentials["ACCESSKEY"]
+    @secret_key = credentials["SECRETKEY"]
+  end
+end
+
+
+
+
+class SnsMessage
+  creds = AWSCred.new
+  ACCESSKEY = creds.access_key || ENV['AMAZON_ACCESS_KEY_ID'] 
+  SECRETKEY = creds.secret_key || ENV['AMAZON_SECRET_ACCESS_KEY']
+  puts "ACCESSKEY" + ACCESSKEY.to_s
+  AMAZONEP  = 'http://sns.us-east-1.amazonaws.com/'
+
+  def initialize(options)
+    @options = options
+    self.doMessage
+  end
+  
+  def doMessage 
+    sns_signer = AwsSNSMessageSign.new(:access_key => ACCESSKEY, :secret_key => SECRETKEY)
+    params = {
+      "Action" => "Publish",
+      "Message" => @options[:message],
+      "Subject" => @options[:subject],
+      "TopicArn" => @options[:topic],
+    }
+    query_string = sns_signer.query_with_signature( params )
+    #puts query_string   
+    url = URI.parse(AMAZONEP)
+    res = Net::HTTP.start(url.host, url.port) {|http|
+      http.get('/?' + query_string)
+    }    
+    puts res.body
+  end
+end
+#SnsMessage.new({:message => 'test', :subject=> 'test', :topic => 'arn:aws:sns:us-east-1:145793127503:ECI_SNS'})
+
+
+class AwsSNSMessageSign  
+  
+  def initialize(options = {})
+    @secret_key = options[:secret_key]
+    raise Exception.new("You must supply a :secret_key") unless @secret_key
+    @access_key = options[:access_key]
+  end
+ 
+  def query_with_signature(hash)
+    return hash_to_query( add_signature(hash)  )
+  end
+  
+  # Pass in a hash representing params for a query string.  
+  # param keys should be strings, not symbols please.
+  # Will return a param with the "Signature" key/value added, without
+  # modifying original. 
+  def add_signature(params)
+    # Make a copy to not modify original  
+    add_signature!( Hash[params]  )
+  end
+  
+  # Like #add_signature, but will mutate the hash passed in, 
+  # adding a "Signature" key/value to hash passed in, and return
+  # hash too.  
+  def add_signature!(params)
+    
+    # supply timestamp, signature method, signature version and access key if not already provided
+    params["Timestamp"] ||= Time.now.iso8601
+    #iso8601 is allowed by requiring that gem abotu time up top
+    params["AWSAccessKeyId"] ||= access_key
+    params["SignatureMethod"] ||= "HmacSHA256"
+    params["SignatureVersion"] ||= "2"
+    # Existing "Signature"? That's gotta go before we generate a new
+    # signature and add it. 
+    params.delete("Signature")
+ 
+    query_string = canonical_querystring(params)
+ 
+    string_to_sign = string_to_sign(query_string)
+ 
+    hmac = HMAC::SHA256.new( secret_key )
+    hmac.update( string_to_sign )
+    # chomp is important!  the base64 encoded version will have a newline at the end
+    signature = Base64.encode64(hmac.digest).chomp 
+ 
+    params["Signature"] = signature
+ 
+    #order doesn't matter for the actual request, we return the hash
+    #and let client turn it into a url.
+    return params
+  end
+ 
+  # Insist on specific method of URL encoding, RFC3986. 
+  def url_encode(string)
+    # It's kinda like CGI.escape, except CGI.escape is encoding a tilde when
+    # it ought not to be, so we turn it back. Also space NEEDS to be %20 not +.
+    return CGI.escape(string).gsub("%7E", "~").gsub("+", "%20")
+  end
+ 
+  # param keys should be strings, not symbols please. return a string joined
+  # by & in canonical order. 
+  def canonical_querystring(params)
+    # I hope this built-in sort sorts by byte order, that's what's required. 
+    values = params.keys.sort.collect {|key|  [url_encode(key), url_encode(params[key].to_s)].join("=") }
+    
+    return values.join("&")
+  end
+ 
+  def string_to_sign(query_string, options = {})
+    options[:verb] = "GET"
+    options[:request_uri] = "/"
+    options[:host] = "sns.us-east-1.amazonaws.com"
+ 
+    
+    return options[:verb] + "\n" + 
+        options[:host].downcase + "\n" +
+        options[:request_uri] + "\n" +
+        query_string
+  end
+ 
+  # Turns a hash into a query string, returns the query string.
+  # url-encodes everything to Amazon's specifications. 
+  def hash_to_query(hash)
+    hash.collect do |key, value|
+      
+      url_encode(key) + "=" + url_encode(value)
+    
+    end.join("&")
+  end
+ 
+  def secret_key
+    return @secret_key
+  end
+  def access_key
+    return @access_key
+  end
+  def access_key=(a)
+    @access_key = a
+  end
+  
+end
+## END CRAZY SNS HACK
+
 class UsersController < ApplicationController
   include GoogleDocs
   include Twitter
@@ -218,7 +378,31 @@ class UsersController < ApplicationController
 
   def user_dashboard
     get_context
+    puts "at user dashboard!!"
+    puts "the api : #{@API.inspect}"
+    puts " about to do an sns message... need sis_user_id "
+    puts "#{SnsMessage.new({:message => {
+        :Name => "Canvas.Student.login",
+        :Type => "UI", 
+        :Body => { :sis_user_id => "jmontross@empowered.com" },
+        :Sequence => "1",
+        :EventTimestamp => "#{Time.now.iso8601}"
+        }.to_json, :subject=> 'test', :topic => 'arn:aws:sns:us-east-1:145793127503:ECI_SNS'})}"
+    puts "just posted to my fake eci_sns"
+
+     puts "#{SnsMessage.new({:message => {
+        :Name => "Canvas.Student.login",
+        :Type => "UI", 
+        :Body => { :sis_user_id => "jmontross@empowered.com" },
+        :Sequence => "1",
+        :EventTimestamp => "#{Time.now.iso8601}"
+        }.to_json, :subject=> 'test', :topic => 'arn:aws:sns:us-east-1:145793127503:empowered_events'})}"
     
+    puts "just posted to empowered_events"
+
+   
+   # puts " is the id unique_id? #{unique_id} "  This breaks,,, unique_id doesn't friggin work.
+
     # dont show crubms on dashboard because it does not make sense to have a breadcrumb
     # trail back to home if you are already home
     clear_crumbs 
