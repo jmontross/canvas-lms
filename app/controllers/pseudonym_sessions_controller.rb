@@ -21,7 +21,13 @@ class PseudonymSessionsController < ApplicationController
   before_filter :forbid_on_files_domain, :except => [ :clear_file_session ]
 
   def new
+    puts "new pseudonym session controller"
+    puts "new pseudonym session controller test"
+    logger.info "new pseudo on logger"
     if @current_user && !params[:re_login]
+      # maybe in here!! 
+      puts "at current user and redirecting to dashboard_url..."
+      puts params.inspect
       redirect_to dashboard_url
       return
     end
@@ -44,12 +50,14 @@ class PseudonymSessionsController < ApplicationController
         }
         return
       elsif params[:ticket]
+        # not in here
         # handle the callback from CAS
         logger.info "Attempting CAS login with ticket #{params[:ticket]} in account #{@domain_root_account.id}"
         st = CASClient::ServiceTicket.new(params[:ticket], login_url)
         begin
           cas_client.validate_service_ticket(st)
         rescue => e
+          # not in here
           logger.warn "Failed to validate CAS ticket: #{e.inspect}"
           flash[:delegated_message] = t 'errors.login_error', "There was a problem logging in at %{institution}", :institution => @domain_root_account.display_name
           redirect_to login_url(:no_auto=>'true')
@@ -59,14 +67,17 @@ class PseudonymSessionsController < ApplicationController
           @pseudonym = nil
           @pseudonym = @domain_root_account.pseudonyms.custom_find_by_unique_id(st.response.user)
           if @pseudonym
+            # not in here...
             # Successful login and we have a user
+            puts "Successful login and we have a user"
             @domain_root_account.pseudonym_sessions.create!(@pseudonym, false)
             session[:cas_login] = true
             @user = @pseudonym.login_assertions_for_user rescue nil
-
+              
             successful_login(@user, @pseudonym)
             return
           else
+            # not in here
             logger.warn "Received CAS login for unknown user: #{st.response.user}"
             reset_session
             session[:delegated_message] = t 'errors.no_matching_user', "Canvas doesn't have an account for user: %{user}", :user => st.response.user
@@ -80,9 +91,10 @@ class PseudonymSessionsController < ApplicationController
           return
         end
       end
-
+      puts "cas login"
       initiate_cas_login(cas_client)
     elsif @is_saml && !params[:no_auto]
+      puts "it's saml and we are logging in!"
       initiate_saml_login(request.env['canvas.account_domain'])
     else
       render :action => "new"
